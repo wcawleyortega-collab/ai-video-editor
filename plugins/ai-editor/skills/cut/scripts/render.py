@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Render the cut with plain ffmpeg: every kept span trimmed and joined.
 
-    python3 render.py <source> <edit_dir> [--crf 18] [--no-hw]
+    python3 render.py <source> <edit_dir> [--crf 18] [--no-hw] [--keep-level]
 
 Reads <edit_dir>/decisions.json and report.json, writes <edit_dir>/cut.mp4 at the
-source resolution (rotation applied), H.264 + AAC.
+source resolution (rotation applied), H.264 + AAC. HDR sources come out SDR BT.709 and the
+speech at -14 LUFS.
 
 How it stays exact on a big 4K source:
   - Each kept span is encoded on its own (video only), in parallel. One
@@ -34,7 +35,7 @@ def count_frames(path):
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
                         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
                        capture_output=True, text=True)
-    return int(r.stdout.strip() or 0)
+    return int(r.stdout.strip().split(",")[0] or 0)   # colour-tagged files print "60," here
 
 
 def starts(path):
@@ -49,6 +50,52 @@ def starts(path):
         except (ValueError, IndexError):
             return 0.0
     return one("stream=start_time", "-select_streams", "v:0"), one("format=start_time")
+
+
+# iPhones film HDR (HLG, Dolby Vision on an HLG base) by default. Squeezed into 8-bit yuv420p
+# untouched, the picture comes out grey and washed out: convert to SDR BT.709 on the Mac's
+# VideoToolbox (Homebrew's ffmpeg has no zscale) and tag it so.
+HDR_TRC = {"arib-std-b67", "smpte2084"}
+TONEMAP = ("scale_vt=color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,"
+           "hwdownload,format=p010le,format=yuv420p")
+SDR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+TARGET_LUFS, PEAK_DB = -14.0, -1.0
+
+
+def is_hdr(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=color_transfer", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    return r.stdout.strip() in HDR_TRC
+
+
+def loudness(path, af=None):
+    """(integrated LUFS, true peak dB) of path, after the filter af; None when unmeasurable."""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af",
+                        (af + "," if af else "") + "ebur128=peak=true", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    tail = r.stderr[r.stderr.rfind("Summary:"):]
+    try:
+        return float(tail.split("I:")[1].split()[0]), float(tail.split("Peak:")[1].split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def level_filter(path):
+    """The filter that puts the speech at -14 LUFS (what the apps play): one gain on the whole track,
+    plus a lookahead limiter at -1.5 dB only when that gain would push a peak past -1 dB (a plain
+    gain alone stops short: one loud plosive caps a quiet take at -24). The limiter takes some level
+    back, so it is measured once more and the shortfall added. None: already there, or unmeasurable."""
+    m = loudness(path)
+    if not m or m[0] < -36 or abs(TARGET_LUFS - m[0]) < 0.5:   # under -36: room tone, not speech
+        return None
+    gain = min(TARGET_LUFS - m[0], 20.0)
+    if m[1] + gain <= PEAK_DB:
+        return f"volume={gain:.2f}dB"
+    lim = ",alimiter=limit=0.841:level=false"
+    again = loudness(path, f"volume={gain:.2f}dB{lim}")
+    if again:
+        gain = min(gain + TARGET_LUFS - again[0], 20.0)
+    return f"volume={gain:.2f}dB{lim}"
 
 
 def video_window(s, e, fps, vstart):
@@ -66,6 +113,7 @@ def main():
     ap.add_argument("edit_dir")
     ap.add_argument("--crf", type=int, default=18)
     ap.add_argument("--no-hw", action="store_true", help="skip hardware decode on a Mac")
+    ap.add_argument("--keep-level", action="store_true", help="leave the take's loudness as recorded")
     a = ap.parse_args()
 
     d = Path(a.edit_dir)
@@ -76,7 +124,11 @@ def main():
     vstart, fstart = starts(src)
     off = vstart - fstart     # where frame 0 plays on the audio's timeline
     tmp = Path(tempfile.mkdtemp(prefix="cut_render_"))
-    print(f"{len(frames)} spans, {sum(e - s for s, e in frames)} frames -> {out}", flush=True)
+    hdr = is_hdr(src) and hw
+    print(f"{len(frames)} spans, {sum(e - s for s, e in frames)} frames -> {out}"
+          + (" (HDR source: converted to SDR)" if hdr else ""), flush=True)
+    if is_hdr(src) and not hw:
+        print("  WARN HDR source left as HDR: the SDR conversion needs a Mac's VideoToolbox (no --no-hw)")
 
     def one(i):
         s, e = frames[i]
@@ -89,10 +141,12 @@ def main():
         # dropping it on read. N/fps keeps the constant-rate clock from duplicating or dropping
         # frames over a 1/600 s source's jittered timestamps.
         cmd = ["ffmpeg", "-v", "error", "-y", "-copyts", *(["-hwaccel", "videotoolbox"] if hw else []),
+               *(["-hwaccel_output_format", "videotoolbox_vld"] if hdr else []),
                "-ss", f"{max(0.0, t0 - fstart - LEAD_S):.6f}", "-i", src, "-an",
-               "-vf", f"trim=start={max(0.0, t0):.6f}:end={t1:.6f},setpts=N/({fps})/TB",
+               "-vf", f"trim=start={max(0.0, t0):.6f}:end={t1:.6f},setpts=N/({fps})/TB"
+               + (f",{TONEMAP}" if hdr else ""),
                "-r", str(fps), "-c:v", "libx264", "-crf", str(a.crf), "-preset", "veryfast",
-               "-pix_fmt", "yuv420p", "-g", "15", str(seg)]
+               "-pix_fmt", "yuv420p", *(SDR_TAGS if hdr else []), "-g", "15", str(seg)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode:
             return f"span {i}: {r.stderr[-300:]}"
@@ -133,6 +187,14 @@ def main():
                        "-filter_complex", fc, "-map", "[ac]",
                        "-c:a", "aac", "-b:a", "192k", str(aud)]).returncode:
         sys.exit("ERROR audio pass failed")
+    lf = None if a.keep_level else level_filter(aud)
+    if lf:
+        lev = tmp / "a_level.m4a"
+        if subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(aud), "-af", lf,
+                           "-c:a", "aac", "-b:a", "192k", str(lev)]).returncode:
+            sys.exit("ERROR level pass failed")
+        aud = lev
+        print(f"  level: {lf} -> {TARGET_LUFS:g} LUFS (--keep-level to skip)", flush=True)
 
     if subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(allv), "-i", str(aud),
                        "-map", "0:v", "-map", "1:a", "-c", "copy", "-movflags", "+faststart",

@@ -143,7 +143,10 @@ def build(edit_dir, speech=None):
         x = pcm(graph=graph)
         x.extend([0.0] * max(0, int(MIN_S * SR) - len(x)))
         target = speech + offset
-        write(out / f"{name}.wav", x, 10 ** ((target - loudest50(x)) / 20), nch)
+        # Speech levelled to -14 LUFS leaves a sharp cue no room under -1 dB: it sits that much lower.
+        gain = min(10 ** ((target - loudest50(x)) / 20), 10 ** (-1.1 / 20) / max(abs(v) for v in x))
+        target = round(target + 20 * math.log10(gain / 10 ** ((target - loudest50(x)) / 20)), 1)
+        write(out / f"{name}.wav", x, gain, nch)
         cues[name] = {"attack_s": attack(x), "db": round(target, 1)}
     kit = {"speech_db": round(speech, 1), "cut_mtime": cut.stat().st_mtime if cut.exists() else 0, "cues": cues}
     (out / "kit.json").write_text(json.dumps(kit, indent=1))

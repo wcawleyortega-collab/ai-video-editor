@@ -43,6 +43,17 @@ HOME = models.HOME
 FILLER_PROMPT = "Umm, uh, so, like, you know, I mean, uh, so, um, wait, sorry, let me start again."
 
 
+def names_prompt(prompt=FILLER_PROMPT):
+    """The profile's names (Jev, Claude) appended, so Whisper spells them right instead of 'Jiv'/'cloud'."""
+    try:
+        names = json.loads((HOME / "profile.json").read_text()).get("names") or []
+    except (OSError, ValueError):
+        return prompt
+    names = [n.get("name", "") if isinstance(n, dict) else str(n) for n in names]
+    names = [n for n in names if n.strip()]
+    return f"{prompt} {', '.join(names)}." if names else prompt
+
+
 def find_key():
     return keys.get("elevenlabs")[0]
 
@@ -82,7 +93,7 @@ def run_whisper(wav, lang):
     # placed 8 s after where it was said, on a real take), and raw takes are full
     # of long silences.
     segs, _ = model.transcribe(str(wav), language=lang, word_timestamps=True,
-                               initial_prompt=FILLER_PROMPT, beam_size=5,
+                               initial_prompt=names_prompt(), beam_size=5,
                                condition_on_previous_text=False, vad_filter=True,
                                vad_parameters={"min_silence_duration_ms": 500})
 
@@ -92,7 +103,7 @@ def run_whisper(wav, lang):
 
     def again(start, end):
         """The words in one stretch, transcribed on their own (no VAD: the stretch is speech)."""
-        segs, _ = model.transcribe(str(wav), language=lang, word_timestamps=True, initial_prompt=FILLER_PROMPT,
+        segs, _ = model.transcribe(str(wav), language=lang, word_timestamps=True, initial_prompt=names_prompt(),
                                    beam_size=5, condition_on_previous_text=False, clip_timestamps=[start, end])
         return [w for w in words_of(segs) if w["start"] >= start - 0.05 and w["end"] <= end + 0.05]
 

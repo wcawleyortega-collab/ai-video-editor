@@ -581,7 +581,25 @@ def fix(d, pairs):
         if name == "captions.json" and not isinstance(data, dict):
             data = one_word_each(data)
         f.write_text(json.dumps(data, indent=1))
+    # The quotes written from the old spelling follow, or build_timeline finds no match for them.
+    def quotes(x):
+        if isinstance(x, dict):
+            return {k: (swap_all(v, pairs) if k == "text" and isinstance(v, str) else quotes(v)) for k, v in x.items()}
+        return [quotes(v) for v in x] if isinstance(x, list) else x
+    for name in ("spans.json", "hooks.json"):
+        f = d / name
+        if f.exists():
+            f.write_text(json.dumps(quotes(json.loads(f.read_text())), indent=1))
+    f = d / "transcript.txt"
+    if f.exists():
+        f.write_text(swap_all(f.read_text(), pairs))
     return n
+
+
+def swap_all(text, pairs):
+    for old, new in pairs:
+        text = swap(text, old, new)
+    return text
 
 
 def one_word_each(toks):

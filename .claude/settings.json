@@ -11,5 +11,29 @@
   "enabledPlugins": {
     "ai-editor@nextwork": true,
     "creator-teardown@nextwork": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/footage_inbox.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/footage_inbox.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }

@@ -156,6 +156,20 @@ def test_text_and_fix():
         assert words[2:4] == ["Claude", "code."] and words[4] == "Claude,", words
 
 
+def test_fix_after_propose_keeps_spans_quotable():
+    """A fix run after propose rewrites the quotes too, so build_timeline still matches them."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d)
+        (p / "words.raw.json").write_text(json.dumps(take("I built it with Jiv. | I built it with Jiv, really")))
+        (p / "spans.json").write_text(json.dumps({"spans": [{"text": "I built it with Jiv.", "kind": "retake"}]}))
+        (p / "hooks.json").write_text(json.dumps({"alternates": [{"n": 1, "text": "Jiv rocks", "after": 1.0}]}))
+        (p / "transcript.txt").write_text("[0.00-1.00] I built it with Jiv.\n")
+        R.fix(d, [("jiv", "Jev")])
+        assert json.loads((p / "spans.json").read_text())["spans"][0]["text"] == "I built it with Jev."
+        assert json.loads((p / "hooks.json").read_text())["alternates"][0] == {"n": 1, "text": "Jev rocks", "after": 1.0}
+        assert (p / "transcript.txt").read_text() == "[0.00-1.00] I built it with Jev.\n"
+
+
 def test_fix_is_remembered_and_captions_use_the_cut_spelling():
     """A re-transcription that heard "Jev" as "Jeff" and "Claude" as "cloud": captions keep the cut's spelling
     with no fix call, and a fix made earlier applies to every later captions run."""

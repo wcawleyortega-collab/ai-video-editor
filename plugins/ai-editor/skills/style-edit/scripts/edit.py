@@ -35,6 +35,27 @@ SRC = PLUGIN / "remotion"
 SETUP = PLUGIN / "skills" / "setup" / "scripts" / "setup.py"
 
 
+def brand_problems(plan, prof):
+    """Why this plan would render off-brand: no brand kit in the profile, its logo file missing, or a
+    plan.json "look" whose ground/accent is not the kit's (a plan made before the kit, or a creator's
+    look winning). [] = on brand."""
+    brand = (prof or {}).get("brand") or {}
+    if not brand.get("ground") or not brand.get("accent"):
+        return ["the profile has no brand kit (brand.ground + brand.accent): profile.py set brand=..."]
+    out = []
+    if brand.get("logo") and not Path(brand["logo"]).expanduser().is_file():
+        out.append(f"brand logo not found: {brand['logo']}")
+    look = plan.get("look") or {}
+    want = {"accent": (look.get("accent") or look.get("mark"), brand["accent"])}
+    if brand.get("preset"):   # the kit opts in to a whole look: its ground on the cards as well
+        want["ground"] = (look.get("ground"), brand["ground"])
+        want["preset"] = (look.get("preset"), brand["preset"])
+    for k, (got, ok) in want.items():
+        if str(got or "").lower() != str(ok).lower():
+            out.append(f'plan look {k} is {got or "unset"}, brand is {ok}: run plan.py again')
+    return out
+
+
 def sync_renderer():
     """Install on first use; afterwards copy the source over so plugin updates take effect."""
     lock = "package-lock.json"     # the pinned set: a changed lock means npm ci again
@@ -767,6 +788,17 @@ def demo():
     m = {"s_per_frame": 0.3, "start_s": 10, "straggle": 1.5, "tail_s": 20, "up_bytes_s": 4e6}
     wall, usd, n, _ = modal_estimate(6000, 140e6, m)
     assert n == 15 and abs(wall - (35 + 10 + 1800 / 15 * 1.5 + 20)) < 1e-6 and abs(usd - modal_cost(1800, 15)) < 1e-9, (wall, n)
+    # the brand gate: no kit, wrong look and a missing logo each stop the stills and the render
+    kit = {"brand": {"ground": "#080A0F", "accent": "#27A8FF"}}
+    assert brand_problems({"look": {"ground": "#080a0f", "accent": "#27A8FF"}}, kit) == []
+    assert brand_problems({"look": {"preset": "neutral", "mark": "#27a8ff"}}, kit) == []   # neutral: accent as mark
+    assert "no brand kit" in brand_problems({"look": {}}, {})[0]
+    assert len(brand_problems({"look": {"mark": "#E5482C"}}, kit)) == 1
+    full = {"brand": {**kit["brand"], "preset": "editorial"}}
+    assert brand_problems({"look": {"preset": "editorial", "ground": "#080A0F", "accent": "#27A8FF"}}, full) == []
+    assert len(brand_problems({"look": {"preset": "neutral", "mark": "#27A8FF"}}, full)) == 2   # no ground, wrong preset
+    assert "logo not found" in brand_problems({"look": {"ground": "#080A0F", "accent": "#27A8FF"}},
+                                              {"brand": {**kit["brand"], "logo": "/nope/logo.png"}})[0]
     print("demo ok")
 
 
@@ -783,11 +815,20 @@ def main():
     ap.add_argument("--github", action="store_true", help="package for GitHub Actions instead of rendering here")
     ap.add_argument("--repo", help="GitHub repo name (github-push, github-fetch)")
     ap.add_argument("--no-check", action="store_true", help="stills even when check.py plan finds a FAIL")
+    ap.add_argument("--off-brand", action="store_true", help="stills/render without the brand kit's look")
     a = ap.parse_args()
     edit = Path(a.edit).resolve()
     plan_path = edit / a.plan
     plan = json.loads(plan_path.read_text())
     tag = plan_path.stem[len("plan"):]
+    if a.cmd in ("stills", "render", "github-push") and not a.off_brand:
+        try:
+            prof = json.loads((HOME / "profile.json").read_text())
+        except (OSError, ValueError):
+            prof = {}
+        bad = brand_problems(plan, prof)
+        if bad:
+            sys.exit("OFF BRAND, not rendering:\n  " + "\n  ".join(bad) + "\n(--off-brand to go ahead anyway)")
     if a.cmd.startswith("github-"):
         if not a.repo:
             sys.exit("ERROR: --repo NAME is required")

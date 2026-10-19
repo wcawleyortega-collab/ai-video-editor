@@ -1386,7 +1386,8 @@ def pick_look(style, prof, prof_mod):
     shadow) and colour comes from the real content. Order: the user's brand kit > the copied creator's
     measured palette (only its saturated accent, as the highlighter) > neutral. A style.json look that
     names a preset (editorial, poster-*, ...) opts in to that preset whole."""
-    if (style.get("look") or {}).get("preset"):
+    # A brand kit that names a preset opts in to it whole too, with its own ground on the cards.
+    if (style.get("look") or {}).get("preset") or ((prof or {}).get("brand") or {}).get("preset"):
         return prof_mod.resolve_look(style, prof, warn=lambda m: print(f"warning: {m}", file=sys.stderr))
     brand = prof_mod.brand_look((prof or {}).get("brand") or {})
     creator = prof_mod.creator_look(style)

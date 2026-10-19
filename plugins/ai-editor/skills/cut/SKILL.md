@@ -99,7 +99,9 @@ Only if the user wants it shorter, also read `references/editorial-rules.md` and
 cuts. Jev does not make those: they are content calls.
 
 A misheard name is one command, never a JSON rewrite: `python3 "$S/retakes.py" fix edits/<name>
-cloud=Claude jiv=Jev` (whole words, timings untouched, kept in `fixes.json` for the captions).
+cloud=Claude jiv=Jev` (whole words, timings untouched, kept in `fixes.json` for the captions; the
+quotes in `spans.json`, `hooks.json` and `transcript.txt` follow, so it is safe after propose).
+Names in the profile's `names` are also handed to Whisper, so it spells them right the first time.
 
 ## 3. Build
 
@@ -129,7 +131,8 @@ python3 "$S/render.py" <source> edits/<name>
 ```
 
 Source resolution, frame-accurate, short audio fades at every join. A 3-minute 4K take takes a few
-minutes: run long takes in the background.
+minutes: run long takes in the background. An iPhone HDR take is converted to SDR (on a Mac; elsewhere
+it warns), and the speech is levelled to -14 LUFS with a -1 dB peak ceiling (`--keep-level` skips it).
 
 ## 5. Verify
 
