@@ -208,6 +208,9 @@ Only on the second answer: `python3 "$S/quality.py" normalize edits/<name>/rende
 ## 8. Hand over
 
 Open the render (`open` on Mac, `start ""` on Windows, `xdg-open` on Linux) and give its full path.
+With a `brand.ending` in the profile, a laptop/Modal/Lambda render also writes `render-final.mp4`
+(the render, then the brand sting on the brand ground): that is the file to post, so open that one.
+A GitHub render or any other file: `python3 "$S/edit.py" ending edits/<name> --video render-github.mp4`.
 Ask for notes. Caption, zoom, card and visual notes: a new plan and stills sheet, then a render.
 Notes about what was cut go back to the cut skill.
 

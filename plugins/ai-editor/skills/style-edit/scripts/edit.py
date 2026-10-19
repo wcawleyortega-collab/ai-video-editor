@@ -56,6 +56,50 @@ def brand_problems(plan, prof):
     return out
 
 
+def probe(path):
+    """(width, height, fps) of the first video stream, and whether the file has audio."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height,r_frame_rate",
+                        "-of", "json", str(path)], capture_output=True, text=True, check=True)
+    streams = json.loads(r.stdout)["streams"]
+    v = next(s for s in streams if s["codec_type"] == "video")
+    n, d = v["r_frame_rate"].split("/")
+    return v["width"], v["height"], round(int(n) / int(d), 3), any(s["codec_type"] == "audio" for s in streams)
+
+
+def append_ending(video, prof, gain_db=3.0):
+    """<render>-final.mp4: the render, then the brand kit's ending (brand.ending, a clip, best with alpha)
+    fitted inside the frame on brand.ground, its sound raised gain_db to sit under the levelled voice.
+    The render itself is left as it is, so check.py's numbers still describe the edit. None: no ending set."""
+    brand = (prof or {}).get("brand") or {}
+    ending = Path(str(brand.get("ending") or "")).expanduser()
+    if not brand.get("ending"):
+        return None
+    if not ending.is_file():
+        sys.exit(f"ERROR brand ending not found: {ending}")
+    w, h, fps, _ = probe(video)
+    _, _, _, has_audio = probe(ending)
+    end_s = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                  str(ending)], capture_output=True, text=True, check=True).stdout.strip())
+    ground = str(brand.get("ground") or "#000000").replace("#", "0x")
+    stereo = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    end_audio = (f"[1:a]{stereo},volume={gain_db}dB[ea]" if has_audio else
+                 f"anullsrc=r=48000:cl=stereo,atrim=0:{end_s}[ea]")
+    fc = (f"color=c={ground}:s={w}x{h}:r={fps}:d={end_s}[bg];"
+          f"[1:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease[s];"
+          f"[bg][s]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p,setsar=1[ev];"
+          f"[0:v]fps={fps},format=yuv420p,setsar=1[v0];[0:a]{stereo}[a0];{end_audio};"
+          f"[v0][a0][ev][ea]concat=n=2:v=1:a=1[v][a]")
+    out = Path(video).with_name(Path(video).stem + "-final.mp4")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(ending), "-filter_complex", fc,
+                        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)],
+                       capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"ERROR ending: {r.stderr[-400:]}")
+    print(f"with the brand ending ({end_s:g} s): {out}")
+    return out
+
+
 def sync_renderer():
     """Install on first use; afterwards copy the source over so plugin updates take effect."""
     lock = "package-lock.json"     # the pinned set: a changed lock means npm ci again
@@ -806,7 +850,7 @@ def main():
     if sys.argv[1:] == ["demo"]:
         return demo()
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["stills", "estimate", "render", "github-push", "github-fetch"])
+    ap.add_argument("cmd", choices=["stills", "estimate", "render", "ending", "github-push", "github-fetch"])
     ap.add_argument("edit")
     ap.add_argument("--plan", default="plan.json")
     ap.add_argument("--lambda", dest="use_lambda", action="store_true")
@@ -816,16 +860,21 @@ def main():
     ap.add_argument("--repo", help="GitHub repo name (github-push, github-fetch)")
     ap.add_argument("--no-check", action="store_true", help="stills even when check.py plan finds a FAIL")
     ap.add_argument("--off-brand", action="store_true", help="stills/render without the brand kit's look")
+    ap.add_argument("--video", help="ending: the render to end (default render<tag>.mp4)")
     a = ap.parse_args()
     edit = Path(a.edit).resolve()
     plan_path = edit / a.plan
     plan = json.loads(plan_path.read_text())
     tag = plan_path.stem[len("plan"):]
+    try:
+        prof = json.loads((HOME / "profile.json").read_text())
+    except (OSError, ValueError):
+        prof = {}
+    if a.cmd == "ending":
+        if not append_ending(edit / (a.video or f"render{tag}.mp4"), prof):
+            sys.exit("No brand ending set: profile.py set brand.ending=/path/to/sting.mov")
+        return
     if a.cmd in ("stills", "render", "github-push") and not a.off_brand:
-        try:
-            prof = json.loads((HOME / "profile.json").read_text())
-        except (OSError, ValueError):
-            prof = {}
         bad = brand_problems(plan, prof)
         if bad:
             sys.exit("OFF BRAND, not rendering:\n  " + "\n  ".join(bad) + "\n(--off-brand to go ahead anyway)")
@@ -856,6 +905,8 @@ def main():
         render_modal(edit, plan_path, pub, edit / f"render{tag}.mp4")
     else:
         render_laptop(edit, plan_path, pub, edit / f"render{tag}{'-draft' if a.draft else ''}.mp4", a.draft)
+    if a.cmd == "render" and not (a.github or a.draft) and (edit / f"render{tag}.mp4").exists():
+        append_ending(edit / f"render{tag}.mp4", prof)
 
 
 if __name__ == "__main__":
